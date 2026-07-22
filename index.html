@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WMS Packer Station</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  .fade-in { animation: fadeIn 0.3s ease-in-out; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .hidden-view { display: none !important; }
+  #toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; }
+  .toast { padding: 15px 25px; border-radius: 8px; color: white; font-weight: bold; margin-bottom: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+  .toast-success { background-color: #10B981; }
+  .toast-error { background-color: #EF4444; }
+</style>
+</head>
+<body class="bg-gray-100 min-h-screen text-gray-800 font-sans">
+<div id="toast-container"></div>
+
+<!-- ====== GANTI DENGAN URL DEPLOYMENT APPS SCRIPT ANDA (yang berakhiran /exec) ====== -->
+<div id="config-banner" class="bg-yellow-100 border-b border-yellow-300 text-yellow-800 text-sm p-2 text-center hidden-view" id="config-warning">
+  ⚠️ Isi dulu APPS_SCRIPT_URL di dalam kode (cari komentar GANTI) sebelum dipakai.
+</div>
+
+<div id="packer-view" class="p-4 max-w-3xl mx-auto">
+  <div class="flex justify-between items-center mb-4 mt-4">
+    <h2 class="text-xl font-bold text-gray-800">Stasiun Packing</h2>
+    <span class="text-xs bg-gray-200 px-2 py-1 rounded">Mode: Hosting Eksternal (Kamera Aktif)</span>
+  </div>
+
+  <!-- Step 1: Scan Resi -->
+  <div id="step-1" class="bg-white p-6 rounded-xl shadow-md mb-4 fade-in">
+    <label class="block text-xl font-bold mb-2">1. Scan Resi (Tracking ID)</label>
+    <input type="text" id="input-resi" class="w-full text-2xl p-4 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none uppercase" placeholder="Scan barcode resi di sini..." autocomplete="off" onkeypress="if(event.key==='Enter') checkResi()">
+    <div class="mt-2 text-sm text-gray-500">Gunakan scanner 2D atau ketik lalu tekan Enter</div>
+  </div>
+
+  <!-- Step 2: List Item & Scan SKU -->
+  <div id="step-2" class="hidden-view bg-white p-6 rounded-xl shadow-md mb-4 fade-in">
+    <div class="flex justify-between items-center border-b pb-2 mb-4">
+      <h3 class="text-lg font-bold">Daftar Item: <span id="display-resi" class="text-blue-600"></span></h3>
+      <span id="progress-badge" class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-bold">0/0 Dipacking</span>
+    </div>
+    <div id="item-list-container" class="space-y-3 mb-6"></div>
+    <div id="sku-scan-area" class="bg-yellow-50 p-4 rounded-lg border border-yellow-200">
+      <label class="block font-bold mb-2 text-yellow-800">2. Scan Barcode Hangtag Fisik</label>
+      <input type="text" id="input-sku" class="w-full text-xl p-3 border-2 border-yellow-300 rounded focus:border-yellow-500 focus:outline-none" placeholder="Scan hangtag item yang berstatus PENDING..." onkeypress="if(event.key==='Enter') validateSKU()">
+    </div>
+  </div>
+
+  <!-- Step 3: Timbangan & Foto -->
+  <div id="step-3" class="hidden-view bg-white p-6 rounded-xl shadow-md fade-in">
+    <h3 class="text-lg font-bold mb-4 text-green-700">✓ Semua Item Tervalidasi. Lanjut QC & Foto</h3>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+      <div>
+        <label class="block font-bold text-sm mb-1">Berat Aktual (Gram)</label>
+        <input type="number" id="input-weight" class="w-full p-3 border rounded-lg text-xl font-bold" placeholder="Misal: 650">
+      </div>
+      <div>
+        <label class="block font-bold text-sm mb-1">ID Packer (Nama Anda)</label>
+        <input type="text" id="input-packer-id" class="w-full p-3 border rounded-lg text-lg uppercase" placeholder="Nama Packer">
+      </div>
+    </div>
+    <div class="mb-4">
+      <label class="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg border">
+        <input type="checkbox" id="qc-check" class="w-6 h-6 text-green-600 rounded">
+        <span class="font-bold text-gray-700">QC Pass (Fisik sesuai pesanan)</span>
+      </label>
+    </div>
+
+    <select id="camera-select" onchange="restartCameraWithSelected()" class="hidden-view mb-2 w-full p-2 border rounded-lg text-sm bg-white"></select>
+
+    <div class="relative bg-black rounded-lg overflow-hidden h-64 mb-4 flex items-center justify-center">
+      <video id="camera-stream" autoplay playsinline class="w-full h-full object-cover hidden-view"></video>
+      <img id="photo-preview" class="w-full h-full object-cover hidden-view" />
+      <button id="btn-start-camera" onclick="startCamera()" class="bg-gray-700 text-white px-4 py-2 rounded shadow absolute z-10">Nyalakan Kamera</button>
+    </div>
+    <canvas id="canvas" class="hidden"></canvas>
+    <div class="flex space-x-2">
+      <button id="btn-take-photo" onclick="takePhoto()" class="hidden-view flex-1 bg-blue-600 text-white font-bold py-3 rounded-lg">Ambil Foto</button>
+      <button id="btn-retake" onclick="retakePhoto()" class="hidden-view bg-gray-500 text-white font-bold py-3 px-4 rounded-lg">Ulang</button>
+    </div>
+    <button id="btn-submit" onclick="submitPacking()" class="hidden-view w-full bg-green-600 text-white font-bold py-4 rounded-lg mt-4 text-xl shadow-lg hover:bg-green-700">SELESAI & SIMPAN</button>
+  </div>
+</div>
+
+<script>
+// ================== KONFIGURASI (WAJIB DIISI) ==================
+// GANTI dengan URL Web App Apps Script Anda, contoh:
+// 'https://script.google.com/macros/s/AKfycbxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/exec'
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxuZ_HIx6wcMpd7Ryqbs-4Y3d4wixq2UPLkA3roVp7M8iHYNstYaUu6LMq5Qm20dTLIpA/exec';
+// ================================================================
+
+if (APPS_SCRIPT_URL.indexOf('GANTI_') === 0) {
+  document.getElementById('config-warning').classList.remove('hidden-view');
+}
+
+// Helper: panggil backend Apps Script sebagai API JSON.
+// Content-Type text/plain sengaja dipakai supaya browser TIDAK mengirim
+// preflight OPTIONS (yang tidak didukung baik oleh Apps Script), sehingga
+// request langsung lolos sebagai "simple request".
+async function callAppsScript(action, payload) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action, payload: payload || {} })
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return await res.json();
+}
+
+let currentOrder = {
+  resi: '', items: [], pendingItems: [], totalCount: 0, packedCount: 0, base64Image: null
+};
+let videoStream = null;
+
+function showToast(message, type = 'error') {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type === 'success' ? 'toast-success' : 'toast-error'} fade-in`;
+  toast.innerText = message;
+  container.appendChild(toast);
+  playTone(type === 'error' ? 200 : 800, type === 'error' ? 0.5 : 0.2);
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 300);
+  }, 4000);
+}
+
+function playTone(frequency, duration) {
+  try {
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = audioCtx.createOscillator();
+    oscillator.type = 'square';
+    oscillator.frequency.setValueAtTime(frequency, audioCtx.currentTime);
+    oscillator.connect(audioCtx.destination);
+    oscillator.start();
+    oscillator.stop(audioCtx.currentTime + duration);
+  } catch (e) { console.log('Audio not supported'); }
+}
+
+function resetPackerUI() {
+  currentOrder = { resi: '', items: [], pendingItems: [], totalCount: 0, packedCount: 0, base64Image: null };
+  document.getElementById('input-resi').value = '';
+  document.getElementById('input-resi').disabled = false;
+  document.getElementById('step-2').classList.add('hidden-view');
+  document.getElementById('step-3').classList.add('hidden-view');
+  document.getElementById('input-resi').focus();
+}
+
+async function checkResi() {
+  const input = document.getElementById('input-resi');
+  const resi = input.value.trim();
+  if (!resi) return;
+  input.disabled = true;
+  try {
+    const response = await callAppsScript('scanWaybill', { noResi: resi });
+    if (!response.success) {
+      showToast(response.message);
+      input.disabled = false;
+      input.value = '';
+      input.focus();
+      return;
+    }
+    currentOrder.resi = resi;
+    currentOrder.items = response.items;
+    currentOrder.totalCount = response.total;
+    currentOrder.packedCount = response.packed;
+    currentOrder.pendingItems = response.items.filter(i => i.status === 'PENDING');
+    document.getElementById('display-resi').innerText = resi;
+    renderItemList();
+    document.getElementById('step-2').classList.remove('hidden-view');
+    document.getElementById('input-sku').focus();
+    showToast(`Paket ditemukan. ${currentOrder.pendingItems.length} item perlu dipacking.`, "success");
+  } catch (error) {
+    showToast("Koneksi gagal: " + error.message);
+    input.disabled = false;
+  }
+}
+
+function renderItemList() {
+  const container = document.getElementById('item-list-container');
+  const badge = document.getElementById('progress-badge');
+  container.innerHTML = '';
+  badge.innerText = `${currentOrder.packedCount} / ${currentOrder.totalCount} Selesai`;
+  if (currentOrder.packedCount === currentOrder.totalCount) {
+    badge.className = "bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-bold";
+  }
+  currentOrder.items.forEach(item => {
+    const isPacked = item.status === 'PACKED';
+    const el = document.createElement('div');
+    el.className = `flex justify-between items-center p-3 rounded border ${isPacked ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`;
+    el.innerHTML = `
+      <div>
+        <div class="font-bold text-lg">${item.namaProduk}</div>
+        <div class="text-sm text-gray-600">Varian: ${item.warna} - Size ${item.size}</div>
+        <div class="text-xs text-gray-400 mt-1">SKU: ${item.skuCode}</div>
+      </div>
+      <div>
+        ${isPacked ? '<span class="text-green-600 font-bold text-xl">✓ OK</span>' : '<span class="text-yellow-600 font-bold animate-pulse">MENUNGGU SCAN</span>'}
+      </div>
+    `;
+    container.appendChild(el);
+  });
+
+  if (currentOrder.pendingItems.length === 0) {
+    document.getElementById('sku-scan-area').classList.add('hidden-view');
+    document.getElementById('step-3').classList.remove('hidden-view');
+    startCamera();
+  }
+}
+
+async function validateSKU() {
+  const input = document.getElementById('input-sku');
+  const barcode = input.value.trim();
+  if (!barcode || currentOrder.pendingItems.length === 0) return;
+  const targetItem = currentOrder.pendingItems[0];
+  input.disabled = true;
+  try {
+    const response = await callAppsScript('validateBarcode', {
+      scannedBarcode: barcode,
+      expectedSkuCode: targetItem.skuCode
+    });
+    input.disabled = false;
+    input.value = '';
+    input.focus();
+    if (!response.success) {
+      showToast(response.message);
+      return;
+    }
+    showToast(`Validasi Sukses: ${targetItem.namaProduk}`, "success");
+    let itemIndex = currentOrder.items.findIndex(i => i.rowIdx === targetItem.rowIdx);
+    currentOrder.items[itemIndex].status = 'PACKED';
+    currentOrder.pendingItems.shift();
+    currentOrder.packedCount++;
+    renderItemList();
+  } catch (error) {
+    showToast("Gagal cek barcode: " + error.message);
+    input.disabled = false;
+    input.value = '';
+  }
+}
+
+// ================== KAMERA ==================
+
+async function populateCameraList() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoDevices = devices.filter(d => d.kind === 'videoinput');
+    const select = document.getElementById('camera-select');
+    const previousValue = select.value;
+    select.innerHTML = '';
+    videoDevices.forEach((device, idx) => {
+      const option = document.createElement('option');
+      option.value = device.deviceId;
+      option.text = device.label || `Kamera ${idx + 1}`;
+      select.appendChild(option);
+    });
+    if (videoDevices.length > 1) {
+      select.classList.remove('hidden-view');
+      if (previousValue) select.value = previousValue;
+    } else {
+      select.classList.add('hidden-view');
+    }
+    return videoDevices;
+  } catch (err) {
+    console.log('Gagal membaca daftar kamera:', err);
+    return [];
+  }
+}
+
+async function startCamera() {
+  document.getElementById('btn-start-camera').classList.add('hidden-view');
+  const video = document.getElementById('camera-stream');
+  video.classList.remove('hidden-view');
+  document.getElementById('btn-take-photo').classList.remove('hidden-view');
+
+  const select = document.getElementById('camera-select');
+  const deviceId = select && select.value ? select.value : null;
+
+  const constraintsPrimary = deviceId
+    ? { video: { deviceId: { exact: deviceId } } }
+    : { video: { facingMode: { ideal: 'environment' } } };
+
+  try {
+    videoStream = await navigator.mediaDevices.getUserMedia(constraintsPrimary);
+    video.srcObject = videoStream;
+    await populateCameraList();
+  } catch (err) {
+    console.log('Kamera gagal (constraint utama):', err.name, err.message);
+    try {
+      videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = videoStream;
+      await populateCameraList();
+      showToast("Kamera default dipakai (kamera pilihan tidak cocok).", "success");
+    } catch (err2) {
+      console.log('Kamera gagal (fallback):', err2.name, err2.message);
+      showToast(`Kamera gagal diakses: ${err2.name || 'Error'} - ${err2.message || ''}`);
+      document.getElementById('btn-start-camera').classList.remove('hidden-view');
+      video.classList.add('hidden-view');
+      document.getElementById('btn-take-photo').classList.add('hidden-view');
+    }
+  }
+}
+
+async function restartCameraWithSelected() {
+  stopCamera();
+  await startCamera();
+}
+
+function stopCamera() {
+  if (videoStream) {
+    videoStream.getTracks().forEach(track => track.stop());
+    videoStream = null;
+  }
+}
+
+// ================== AKHIR KAMERA ==================
+
+function takePhoto() {
+  const video = document.getElementById('camera-stream');
+  const canvas = document.getElementById('canvas');
+  const preview = document.getElementById('photo-preview');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  currentOrder.base64Image = canvas.toDataURL('image/jpeg', 0.7);
+  video.classList.add('hidden-view');
+  preview.src = currentOrder.base64Image;
+  preview.classList.remove('hidden-view');
+  document.getElementById('btn-take-photo').classList.add('hidden-view');
+  document.getElementById('btn-retake').classList.remove('hidden-view');
+  document.getElementById('btn-submit').classList.remove('hidden-view');
+}
+
+function retakePhoto() {
+  currentOrder.base64Image = null;
+  document.getElementById('photo-preview').classList.add('hidden-view');
+  document.getElementById('camera-stream').classList.remove('hidden-view');
+  document.getElementById('btn-take-photo').classList.remove('hidden-view');
+  document.getElementById('btn-retake').classList.add('hidden-view');
+  document.getElementById('btn-submit').classList.add('hidden-view');
+}
+
+async function submitPacking() {
+  const weight = document.getElementById('input-weight').value;
+  const packerId = document.getElementById('input-packer-id').value;
+  const qcPass = document.getElementById('qc-check').checked;
+  if (!weight) return showToast("Masukkan berat aktual (Gram).");
+  if (!packerId) return showToast("Masukkan ID/Nama Packer.");
+  if (!qcPass) return showToast("Centang QC Pass terlebih dahulu.");
+  if (!currentOrder.base64Image) return showToast("Ambil foto bukti packing.");
+
+  const btnSubmit = document.getElementById('btn-submit');
+  btnSubmit.disabled = true;
+  btnSubmit.innerText = "MENYIMPAN... TUNGGU...";
+
+  const payload = {
+    noResi: currentOrder.resi,
+    packerId: packerId,
+    actualWeight: weight,
+    base64Image: currentOrder.base64Image
+  };
+
+  try {
+    const response = await callAppsScript('submitPackingAndPhoto', payload);
+    if (response.success) {
+      showToast("DATA TERSIMPAN! Lanjut paket berikutnya.", "success");
+      stopCamera();
+      resetPackerUI();
+    } else {
+      showToast("Gagal menyimpan: " + response.message);
+      btnSubmit.disabled = false;
+      btnSubmit.innerText = "SELESAI & SIMPAN";
+    }
+  } catch (error) {
+    showToast("Error sistem: " + error.message);
+    btnSubmit.disabled = false;
+    btnSubmit.innerText = "SELESAI & SIMPAN";
+  }
+}
+
+document.getElementById('input-resi').focus();
+</script>
+</body>
+</html>
